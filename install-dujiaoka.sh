@@ -5,11 +5,12 @@ set -e
 echo "=== 独角数自动发卡系统 2.0.6-antibody 一键安装脚本 ==="
 
 # 交互输入用户配置
-read -p "请输入网站域名（例：p.golife.blog）: " DOMAIN
+read -p "请输入网站域名（例如 p.golife.blog）: " DOMAIN
+read -p "请输入用于申请 SSL 的邮箱地址: " SSL_EMAIL
 read -p "请输入 MySQL root 密码（无密码直接回车）: " MYSQL_ROOT_PASS
-read -p "请输入独角数数据库名（默认dujiaoka）: " DB_NAME
+read -p "请输入独角数数据库名（默认 dujiaoka）: " DB_NAME
 DB_NAME=${DB_NAME:-dujiaoka}
-read -p "请输入独角数数据库用户名（默认dujiaoka）: " DB_USER
+read -p "请输入独角数数据库用户名（默认 dujiaoka）: " DB_USER
 DB_USER=${DB_USER:-dujiaoka}
 read -p "请输入独角数数据库用户密码: " DB_PASS
 
@@ -21,6 +22,7 @@ DOWNLOAD_URL="https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-
 echo ""
 echo "===== 配置信息确认 ====="
 echo "域名: $DOMAIN"
+echo "SSL邮箱: $SSL_EMAIL"
 echo "数据库名: $DB_NAME"
 echo "数据库用户: $DB_USER"
 echo "数据库密码: (已隐藏)"
@@ -31,9 +33,10 @@ echo ""
 
 echo "开始安装，请耐心等待..."
 
-# 更新系统并安装必要组件
+# 安装必要组件
 apt update && apt upgrade -y
-apt install -y nginx mysql-server php${PHP_VER}-fpm php-mysql php-curl php-gd php-intl php-mbstring php-soap php-xml php-zip unzip wget curl
+apt install -y nginx mysql-server curl wget unzip certbot python3-certbot-nginx \
+  php${PHP_VER}-fpm php-mysql php-curl php-gd php-intl php-mbstring php-soap php-xml php-zip
 
 # 配置 MySQL
 echo "配置MySQL数据库和用户..."
@@ -54,28 +57,71 @@ GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
 FLUSH PRIVILEGES;
 EOF
 
-# 下载独角数系统
-echo "下载独角数自动发卡系统版本 $DUJIAOKA_VER..."
+# 下载独角数
+echo "下载独角数..."
 mkdir -p $INSTALL_DIR
 cd /tmp
-wget -O dujiaoka.tar.gz "$DOWNLOAD_URL" || { echo "下载失败，请检查网络或版本号"; exit 1; }
-
-# 解压文件
-echo "解压安装文件..."
+curl -L -o dujiaoka.tar.gz -H "User-Agent: Mozilla/5.0" "$DOWNLOAD_URL"
 tar -zxf dujiaoka.tar.gz -C $INSTALL_DIR --strip-components=1
 
-# 设置文件权限
+# 权限设置
 echo "设置文件权限..."
 chown -R www-data:www-data $INSTALL_DIR
 find $INSTALL_DIR -type d -exec chmod 755 {} \;
 find $INSTALL_DIR -type f -exec chmod 644 {} \;
 
-# 配置 Nginx
-echo "配置Nginx..."
+# 配置 Nginx（初始HTTP配置，用于申请SSL）
+echo "配置 Nginx..."
 cat >/etc/nginx/sites-available/$DOMAIN.conf <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
+
+    root $INSTALL_DIR;
+    index index.php index.html index.htm;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$args;
+    }
+
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php${PHP_VER}-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+    }
+
+    location ~ /.well-known/acme-challenge/ {
+        allow all;
+    }
+}
+EOF
+
+ln -sf /etc/nginx/sites-available/$DOMAIN.conf /etc/nginx/sites-enabled/
+
+nginx -t && systemctl restart nginx || { echo "Nginx 配置错误，终止！"; exit 1; }
+
+# 申请 SSL 证书
+echo "申请 Let's Encrypt 证书..."
+certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m "$SSL_EMAIL" || {
+  echo "SSL 申请失败，跳过配置 HTTPS。"
+}
+
+# 覆盖为 HTTPS 配置（如果成功）
+if [ -d "/etc/letsencrypt/live/$DOMAIN" ]; then
+  echo "启用 HTTPS 配置..."
+  cat >/etc/nginx/sites-available/$DOMAIN.conf <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
 
     root $INSTALL_DIR;
     index index.php index.html index.htm;
@@ -99,13 +145,11 @@ server {
 }
 EOF
 
-ln -sf /etc/nginx/sites-available/$DOMAIN.conf /etc/nginx/sites-enabled/
+  nginx -t && systemctl reload nginx
+fi
 
-nginx -t || { echo "Nginx 配置错误，安装终止！"; exit 1; }
-systemctl reload nginx
-
-# 优化PHP配置
-echo "优化PHP配置..."
+# PHP 优化
+echo "优化 PHP 配置..."
 PHP_INI="/etc/php/${PHP_VER}/fpm/php.ini"
 sed -i "s/upload_max_filesize = .*/upload_max_filesize = 1024M/" $PHP_INI
 sed -i "s/post_max_size = .*/post_max_size = 1024M/" $PHP_INI
@@ -115,4 +159,7 @@ sed -i "s/max_input_time = .*/max_input_time = 900/" $PHP_INI
 systemctl restart php${PHP_VER}-fpm
 systemctl restart nginx
 
-echo "安装完成！请访问 http://$DOMAIN 进行后台初始化配置。"
+echo ""
+echo "✅ 安装完成！请访问以下地址初始化网站："
+echo "👉 https://$DOMAIN"
+echo ""
