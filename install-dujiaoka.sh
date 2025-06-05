@@ -62,7 +62,16 @@ echo "下载独角数..."
 mkdir -p $INSTALL_DIR
 cd /tmp
 curl -L -o dujiaoka.tar.gz -H "User-Agent: Mozilla/5.0" "$DOWNLOAD_URL"
-tar -zxf dujiaoka.tar.gz -C $INSTALL_DIR --strip-components=1
+rm -rf ${INSTALL_DIR:?}/*
+tar -zxf dujiaoka.tar.gz -C $INSTALL_DIR
+
+# 因为包内有顶级dujiaoka目录，移动里面内容到安装目录
+if [ -d "$INSTALL_DIR/dujiaoka" ]; then
+  echo "整理文件结构..."
+  mv $INSTALL_DIR/dujiaoka/* $INSTALL_DIR/
+  mv $INSTALL_DIR/dujiaoka/.* $INSTALL_DIR/ 2>/dev/null || true
+  rmdir $INSTALL_DIR/dujiaoka || true
+fi
 
 # 权限设置
 echo "设置文件权限..."
