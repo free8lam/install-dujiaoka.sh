@@ -39,7 +39,7 @@ $MYSQL_CMD -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localho
 echo "下载独角数自动发卡系统..."
 sudo mkdir -p $WEB_ROOT
 cd /tmp
-wget -O dujiaoka.zip https://github.com/dujiaoka/dujiaoka/releases/latest/download/dujiaoka.zip
+wget -O dujiaoka.zip https://github.com/dujiaoka/dujiaoka/releases/download/vX.Y.Z/dujiaoka-vX.Y.Z.zip
 unzip -o dujiaoka.zip -d dujiaoka_temp
 sudo cp -r dujiaoka_temp/. $WEB_ROOT
 
