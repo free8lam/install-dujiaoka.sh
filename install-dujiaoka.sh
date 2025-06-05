@@ -1,57 +1,43 @@
 #!/bin/bash
-# 独角数自动发卡系统一键安装脚本（Ubuntu + PHP8.3 + Nginx + MySQL + HTTPS）
-# 重要隐私信息安装时交互输入，避免脚本明文存储
-# 版本：2.0.6-antibody
 
-set -e
+set -euo pipefail
 
-echo "🚀 欢迎使用独角数自动发卡系统安装脚本"
-echo "请确保已将域名正确解析到本服务器"
-echo
+echo "=============================="
+echo " 独角数自动发卡系统 一键安装脚本"
+echo " 适用于 Ubuntu 20.04 / 22.04"
+echo "=============================="
 
-# 交互输入区（敏感信息）
-read -rp "请输入站点域名（例如: p.golife.blog）: " DOMAIN
-read -rp "请输入 MySQL root 用户密码（无密码请留空）: " MYSQL_ROOT_PASS
-read -rp "请输入独角数数据库名（默认dujiaoka）: " DB_NAME
-DB_NAME=${DB_NAME:-dujiaoka}
-read -rp "请输入独角数数据库用户名（默认dujiaoka）: " DB_USER
-DB_USER=${DB_USER:-dujiaoka}
-read -rp "请输入独角数数据库密码: " DB_PASS
+# 交互输入区
+read -p "请输入站点域名（如 example.com）: " DOMAIN
+read -p "请输入 MySQL root 密码（无则留空直接回车）: " MYSQL_ROOT_PASS
+read -p "请输入独角数数据库名（建议 dujiaoka）: " DB_NAME
+read -p "请输入独角数数据库用户名（建议 dujiaoka）: " DB_USER
+read -p "请输入独角数数据库用户密码: " DB_PASS
+read -p "请输入你的邮箱地址（用于申请SSL证书）: " SSL_EMAIL
 
-# PHP 版本
+# 变量
 PHP_VERSION="8.3"
-WP_PATH="/var/www/${DOMAIN}"
+WP_PATH="/var/www/dujiaoka"
+DUJIAOKA_VERSION="2.0.6-antibody"
+DOWNLOAD_URL="https://github.com/assimon/dujiaoka/releases/download/${DUJIAOKA_VERSION}/${DUJIAOKA_VERSION}.tar.gz"
 
-echo
-echo "🛠️ 开始安装依赖和配置环境..."
-
-# 更新系统
+echo "🚀 开始系统更新升级..."
 sudo apt update && sudo apt upgrade -y
 
-# 安装 Nginx、MySQL、PHP 及必备扩展
-sudo apt install -y nginx mysql-server php${PHP_VERSION}-fpm php${PHP_VERSION}-mysql php${PHP_VERSION}-curl php${PHP_VERSION}-gd php${PHP_VERSION}-intl php${PHP_VERSION}-mbstring php${PHP_VERSION}-soap php${PHP_VERSION}-xml php${PHP_VERSION}-zip unzip wget curl certbot python3-certbot-nginx
+echo "📦 安装基础环境: Nginx, MySQL, PHP${PHP_VERSION}及扩展..."
+sudo apt install -y nginx mysql-server php${PHP_VERSION}-fpm php${PHP_VERSION}-mysql php${PHP_VERSION}-curl php${PHP_VERSION}-gd php${PHP_VERSION}-intl php${PHP_VERSION}-mbstring php${PHP_VERSION}-soap php${PHP_VERSION}-xml php${PHP_VERSION}-zip php${PHP_VERSION}-imagick unzip wget curl certbot python3-certbot-nginx
 
-# 启动并设置服务开机启动
-sudo systemctl enable nginx
-sudo systemctl enable mysql
-sudo systemctl enable php${PHP_VERSION}-fpm
-sudo systemctl start nginx
-sudo systemctl start mysql
-sudo systemctl start php${PHP_VERSION}-fpm
-
-echo
-echo "🔧 配置 MySQL 数据库和用户..."
-
+echo "🔧 配置 MySQL root 用户密码及授权数据库..."
 if [ -z "$MYSQL_ROOT_PASS" ]; then
-    # 无root密码，直接操作
-    sudo mysql <<EOF
+  echo "检测到 MySQL root 密码为空，尝试无密码连接..."
+  sudo mysql <<EOF
 CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
 FLUSH PRIVILEGES;
 EOF
 else
-    sudo mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOF
+  sudo mysql -uroot -p"${MYSQL_ROOT_PASS}" <<EOF
 CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
@@ -59,29 +45,40 @@ FLUSH PRIVILEGES;
 EOF
 fi
 
-echo
-echo "⬇️ 下载独角数自动发卡系统最新版本（2.0.6-antibody）..."
-
-INSTALL_DIR="/var/www/${DOMAIN}"
-sudo mkdir -p "${INSTALL_DIR}"
-sudo chown "$USER":"$USER" "${INSTALL_DIR}"
+echo "📥 下载独角数自动发卡系统版本 ${DUJIAOKA_VERSION}..."
+sudo mkdir -p "${WP_PATH}"
 cd /tmp
-wget -c https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz -O dujiaoka.tar.gz
+wget -O dujiaoka.tar.gz "${DOWNLOAD_URL}" || { echo "❌ 下载失败，请检查网络和版本号"; exit 1; }
 
-echo "🗜️ 解压并部署独角数程序..."
-tar -zxf dujiaoka.tar.gz -C "${INSTALL_DIR}"
-sudo chown -R www-data:www-data "${INSTALL_DIR}"
+echo "📂 解压..."
+sudo tar -zxvf dujiaoka.tar.gz -C /tmp || { echo "❌ 解压失败"; exit 1; }
 
-echo
+# 解压后目录名称：dujiaoka-2.0.6-antibody
+EXTRACTED_DIR="/tmp/dujiaoka-${DUJIAOKA_VERSION}"
+
+if [ ! -d "$EXTRACTED_DIR" ]; then
+  echo "❌ 解压目录不存在: $EXTRACTED_DIR"
+  exit 1
+fi
+
+echo "📁 移动并重命名安装目录到 ${WP_PATH}..."
+sudo rm -rf "${WP_PATH}"
+sudo mv "$EXTRACTED_DIR" "${WP_PATH}"
+
+echo "🔐 设置文件权限..."
+sudo chown -R www-data:www-data "${WP_PATH}"
+sudo find "${WP_PATH}" -type d -exec chmod 755 {} \;
+sudo find "${WP_PATH}" -type f -exec chmod 644 {} \;
+
 echo "🌐 配置 Nginx 虚拟主机..."
-
 NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}.conf"
-sudo bash -c "cat > ${NGINX_CONF}" <<EOF
+
+sudo tee "$NGINX_CONF" > /dev/null <<EOF
 server {
     listen 80;
     server_name ${DOMAIN};
 
-    root ${INSTALL_DIR};
+    root ${WP_PATH};
     index index.php index.html index.htm;
 
     client_max_body_size 1024M;
@@ -94,7 +91,6 @@ server {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/var/run/php/php${PHP_VERSION}-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        include fastcgi_params;
     }
 
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|otf|eot)\$ {
@@ -104,34 +100,28 @@ server {
 }
 EOF
 
-sudo ln -sf "${NGINX_CONF}" /etc/nginx/sites-enabled/
+sudo ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/
 
-echo
-echo "⚙️ 优化 PHP 配置参数..."
+echo "🔍 检查 Nginx 配置语法..."
+sudo nginx -t || { echo "❌ Nginx 配置语法错误"; exit 1; }
 
-PHP_INI="/etc/php/${PHP_VERSION}/fpm/php.ini"
-sudo sed -i "s/upload_max_filesize = .*/upload_max_filesize = 1024M/" "$PHP_INI"
-sudo sed -i "s/post_max_size = .*/post_max_size = 1024M/" "$PHP_INI"
-sudo sed -i "s/max_execution_time = .*/max_execution_time = 900/" "$PHP_INI"
-sudo sed -i "s/max_input_time = .*/max_input_time = 900/" "$PHP_INI"
-
-echo
-echo "🔐 设置文件权限..."
-
-sudo chown -R www-data:www-data "${INSTALL_DIR}"
-sudo find "${INSTALL_DIR}" -type d -exec chmod 755 {} \;
-sudo find "${INSTALL_DIR}" -type f -exec chmod 644 {} \;
-
-echo
-echo "🔐 申请 SSL 证书..."
-
-sudo certbot --nginx -d "${DOMAIN}" --agree-tos --no-eff-email --email "admin@${DOMAIN}" || echo "⚠️ SSL 申请失败，请确认域名已正确解析"
-
-echo
-echo "🔄 重启服务..."
-
+echo "🔄 重载 Nginx..."
 sudo systemctl reload nginx
-sudo systemctl restart php${PHP_VERSION}-fpm
 
-echo
-echo "🎉 安装完成！请访问 https://${DOMAIN} 进行后台初始化配置。"
+echo "🔧 优化 PHP 配置参数..."
+PHP_INI_PATH="/etc/php/${PHP_VERSION}/fpm/php.ini"
+if [ -f "$PHP_INI_PATH" ]; then
+    sudo sed -i "s/upload_max_filesize = .*/upload_max_filesize = 1024M/" "$PHP_INI_PATH"
+    sudo sed -i "s/post_max_size = .*/post_max_size = 1024M/" "$PHP_INI_PATH"
+    sudo sed -i "s/max_execution_time = .*/max_execution_time = 900/" "$PHP_INI_PATH"
+    sudo sed -i "s/max_input_time = .*/max_input_time = 900/" "$PHP_INI_PATH"
+fi
+
+echo "🔄 重启 PHP-FPM 和 Nginx 服务..."
+sudo systemctl restart php${PHP_VERSION}-fpm
+sudo systemctl restart nginx
+
+echo "🔐 申请并配置 SSL 证书（使用 Certbot）..."
+sudo certbot --nginx -d "${DOMAIN}" --email "${SSL_EMAIL}" --agree-tos --no-eff-email --redirect || echo "❌ SSL 证书申请失败，请确认域名DNS解析正确"
+
+echo "🎉 安装完成！请访问 https://${DOMAIN} 进行后台初始化配置"
