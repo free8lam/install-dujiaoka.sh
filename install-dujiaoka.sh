@@ -4,7 +4,7 @@ set -e
 echo "=== 独角数自动发卡系统 2.0.6-antibody 一键安装脚本（稳定修复版）==="
 
 # 用户交互输入
-read -p "请输入网站域名（如 dj.golife.blog）: " DOMAIN
+read -p "请输入网站域名（）: " DOMAIN
 read -p "请输入用于申请 SSL 的邮箱: " SSL_EMAIL
 read -p "请输入 MySQL root 密码（无密码直接回车）: " MYSQL_ROOT_PASS
 read -p "请输入独角数数据库名（默认 dujiaoka）: " DB_NAME
