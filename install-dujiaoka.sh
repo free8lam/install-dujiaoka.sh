@@ -1,84 +1,67 @@
 #!/bin/bash
 
-set -euo pipefail
+# 独角数自动发卡系统一键安装脚本
+# 适用环境：Ubuntu 20.04/22.04，PHP 8.3，Nginx，MySQL
+# 版本：dujiaoka 2.0.6-antibody
 
-echo "=============================="
-echo " 独角数自动发卡系统 一键安装脚本"
-echo " 适用于 Ubuntu 20.04 / 22.04"
-echo "=============================="
+set -e
 
-# 交互输入区
-read -p "请输入站点域名（如 example.com）: " DOMAIN
-read -p "请输入 MySQL root 密码（无则留空直接回车）: " MYSQL_ROOT_PASS
-read -p "请输入独角数数据库名（建议 dujiaoka）: " DB_NAME
-read -p "请输入独角数数据库用户名（建议 dujiaoka）: " DB_USER
-read -p "请输入独角数数据库用户密码: " DB_PASS
+echo "=== 独角数自动发卡系统安装脚本 ==="
+
+# 交互输入
+read -p "请输入网站域名（如 example.com）: " DOMAIN
+read -p "请输入MySQL root密码（如果没有请留空直接回车）: " MYSQL_ROOT_PASSWORD
+read -p "请输入新建数据库名称（例如 dujiaoka）: " DB_NAME
+read -p "请输入数据库用户名: " DB_USER
+read -sp "请输入数据库用户密码: " DB_PASSWORD
+echo
 read -p "请输入你的邮箱地址（用于申请SSL证书）: " SSL_EMAIL
 
-# 变量
-PHP_VERSION="8.3"
-WP_PATH="/var/www/dujiaoka"
+# 软件版本和路径
 DUJIAOKA_VERSION="2.0.6-antibody"
-DOWNLOAD_URL="https://github.com/assimon/dujiaoka/releases/download/${DUJIAOKA_VERSION}/${DUJIAOKA_VERSION}.tar.gz"
+DUJIAOKA_DOWNLOAD_URL="https://github.com/assimon/dujiaoka/releases/download/${DUJIAOKA_VERSION}/${DUJIAOKA_VERSION}.tar.gz"
+WEB_ROOT="/var/www/dujiaoka"
+PHP_VERSION="8.3"
 
-echo "🚀 开始系统更新升级..."
+echo "🔄 更新系统..."
 sudo apt update && sudo apt upgrade -y
 
-echo "📦 安装基础环境: Nginx, MySQL, PHP${PHP_VERSION}及扩展..."
-sudo apt install -y nginx mysql-server php${PHP_VERSION}-fpm php${PHP_VERSION}-mysql php${PHP_VERSION}-curl php${PHP_VERSION}-gd php${PHP_VERSION}-intl php${PHP_VERSION}-mbstring php${PHP_VERSION}-soap php${PHP_VERSION}-xml php${PHP_VERSION}-zip php${PHP_VERSION}-imagick unzip wget curl certbot python3-certbot-nginx
+echo "📦 安装必要软件包..."
+sudo apt install -y nginx mysql-server php${PHP_VERSION}-fpm php-mysql php-curl php-gd php-mbstring php-xml php-zip unzip wget curl certbot python3-certbot-nginx
 
-echo "🔧 配置 MySQL root 用户密码及授权数据库..."
-if [ -z "$MYSQL_ROOT_PASS" ]; then
-  echo "检测到 MySQL root 密码为空，尝试无密码连接..."
-  sudo mysql <<EOF
-CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
-GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
-FLUSH PRIVILEGES;
-EOF
+echo "🛠️ 配置 MySQL..."
+if [ -z "$MYSQL_ROOT_PASSWORD" ]; then
+  # 无密码连接
+  sudo mysql -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+  sudo mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';"
+  sudo mysql -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost'; FLUSH PRIVILEGES;"
 else
-  sudo mysql -uroot -p"${MYSQL_ROOT_PASS}" <<EOF
-CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
-GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
-FLUSH PRIVILEGES;
-EOF
+  sudo mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+  sudo mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';"
+  sudo mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost'; FLUSH PRIVILEGES;"
 fi
 
 echo "📥 下载独角数自动发卡系统版本 ${DUJIAOKA_VERSION}..."
-sudo mkdir -p "${WP_PATH}"
-cd /tmp
-wget -O dujiaoka.tar.gz "${DOWNLOAD_URL}" || { echo "❌ 下载失败，请检查网络和版本号"; exit 1; }
+mkdir -p /tmp/dujiaoka_install
+cd /tmp/dujiaoka_install
+wget -q --show-progress "${DUJIAOKA_DOWNLOAD_URL}" -O dujiaoka.tar.gz || { echo "❌ 下载失败，请检查网络和版本号"; exit 1; }
+tar -zxf dujiaoka.tar.gz
 
-echo "📂 解压..."
-sudo tar -zxvf dujiaoka.tar.gz -C /tmp || { echo "❌ 解压失败"; exit 1; }
-
-# 解压后目录名称：dujiaoka-2.0.6-antibody
-EXTRACTED_DIR="/tmp/dujiaoka-${DUJIAOKA_VERSION}"
-
-if [ ! -d "$EXTRACTED_DIR" ]; then
-  echo "❌ 解压目录不存在: $EXTRACTED_DIR"
-  exit 1
-fi
-
-echo "📁 移动并重命名安装目录到 ${WP_PATH}..."
-sudo rm -rf "${WP_PATH}"
-sudo mv "$EXTRACTED_DIR" "${WP_PATH}"
-
-echo "🔐 设置文件权限..."
-sudo chown -R www-data:www-data "${WP_PATH}"
-sudo find "${WP_PATH}" -type d -exec chmod 755 {} \;
-sudo find "${WP_PATH}" -type f -exec chmod 644 {} \;
+echo "📂 部署文件到网站根目录 ${WEB_ROOT} ..."
+sudo mkdir -p ${WEB_ROOT}
+sudo cp -r * ${WEB_ROOT}/
+sudo chown -R www-data:www-data ${WEB_ROOT}
+sudo find ${WEB_ROOT} -type d -exec chmod 755 {} \;
+sudo find ${WEB_ROOT} -type f -exec chmod 644 {} \;
 
 echo "🌐 配置 Nginx 虚拟主机..."
-NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}.conf"
-
-sudo tee "$NGINX_CONF" > /dev/null <<EOF
+NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}"
+sudo tee ${NGINX_CONF} > /dev/null <<EOF
 server {
     listen 80;
     server_name ${DOMAIN};
 
-    root ${WP_PATH};
+    root ${WEB_ROOT};
     index index.php index.html index.htm;
 
     client_max_body_size 1024M;
@@ -100,28 +83,23 @@ server {
 }
 EOF
 
-sudo ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/
-
-echo "🔍 检查 Nginx 配置语法..."
-sudo nginx -t || { echo "❌ Nginx 配置语法错误"; exit 1; }
-
-echo "🔄 重载 Nginx..."
+# 启用站点配置
+sudo ln -sf ${NGINX_CONF} /etc/nginx/sites-enabled/
+sudo nginx -t || { echo "❌ Nginx 配置测试失败，请检查！"; exit 1; }
 sudo systemctl reload nginx
 
-echo "🔧 优化 PHP 配置参数..."
-PHP_INI_PATH="/etc/php/${PHP_VERSION}/fpm/php.ini"
-if [ -f "$PHP_INI_PATH" ]; then
-    sudo sed -i "s/upload_max_filesize = .*/upload_max_filesize = 1024M/" "$PHP_INI_PATH"
-    sudo sed -i "s/post_max_size = .*/post_max_size = 1024M/" "$PHP_INI_PATH"
-    sudo sed -i "s/max_execution_time = .*/max_execution_time = 900/" "$PHP_INI_PATH"
-    sudo sed -i "s/max_input_time = .*/max_input_time = 900/" "$PHP_INI_PATH"
-fi
+echo "🔐 申请并安装 SSL 证书..."
+sudo certbot --nginx -d "${DOMAIN}" --email "${SSL_EMAIL}" --agree-tos --no-eff-email --non-interactive || echo "❌ SSL 证书申请失败，请确认域名已正确解析"
 
-echo "🔄 重启 PHP-FPM 和 Nginx 服务..."
+echo "⚙️ 优化 PHP 配置参数..."
+PHP_INI="/etc/php/${PHP_VERSION}/fpm/php.ini"
+sudo sed -i "s/upload_max_filesize = .*/upload_max_filesize = 1024M/" $PHP_INI
+sudo sed -i "s/post_max_size = .*/post_max_size = 1024M/" $PHP_INI
+sudo sed -i "s/max_execution_time = .*/max_execution_time = 900/" $PHP_INI
+sudo sed -i "s/max_input_time = .*/max_input_time = 900/" $PHP_INI
+
+echo "🔄 重启 PHP 和 Nginx 服务..."
 sudo systemctl restart php${PHP_VERSION}-fpm
 sudo systemctl restart nginx
 
-echo "🔐 申请并配置 SSL 证书（使用 Certbot）..."
-sudo certbot --nginx -d "${DOMAIN}" --email "${SSL_EMAIL}" --agree-tos --no-eff-email --redirect || echo "❌ SSL 证书申请失败，请确认域名DNS解析正确"
-
-echo "🎉 安装完成！请访问 https://${DOMAIN} 进行后台初始化配置"
+echo "🎉 安装完成！请访问 https://${DOMAIN} 进行独角数自动发卡系统的后台初始化配置"
