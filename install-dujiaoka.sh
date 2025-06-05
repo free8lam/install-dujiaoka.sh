@@ -1,65 +1,87 @@
 #!/bin/bash
+# 独角数自动发卡系统一键安装脚本（Ubuntu + PHP8.3 + Nginx + MySQL + HTTPS）
+# 重要隐私信息安装时交互输入，避免脚本明文存储
+# 版本：2.0.6-antibody
 
 set -e
 
-echo "===== 独角数自动发卡系统 一键安装脚本 ====="
-echo "请确保服务器已正确解析域名，且端口已开放"
+echo "🚀 欢迎使用独角数自动发卡系统安装脚本"
+echo "请确保已将域名正确解析到本服务器"
+echo
 
-# 1. 读取用户输入
-read -p "请输入网站域名（如 p.golife.blog）: " DOMAIN
-read -p "请输入 MySQL root 密码（若为空请确保你可无密码登录）: " MYSQL_ROOT_PASS
-read -p "请输入独角数数据库名（建议 dujiaoka）: " DB_NAME
-read -p "请输入独角数数据库用户（建议 dujiaoka_user）: " DB_USER
-read -p "请输入数据库用户密码: " DB_PASS
-read -p "请输入 SSL 证书绑定邮箱（用于 Let's Encrypt）: " SSL_EMAIL
+# 交互输入区（敏感信息）
+read -rp "请输入站点域名（例如: p.golife.blog）: " DOMAIN
+read -rp "请输入 MySQL root 用户密码（无密码请留空）: " MYSQL_ROOT_PASS
+read -rp "请输入独角数数据库名（默认dujiaoka）: " DB_NAME
+DB_NAME=${DB_NAME:-dujiaoka}
+read -rp "请输入独角数数据库用户名（默认dujiaoka）: " DB_USER
+DB_USER=${DB_USER:-dujiaoka}
+read -rp "请输入独角数数据库密码: " DB_PASS
 
-# 2. 安装系统依赖
-echo "📦 更新系统 & 安装必备软件"
+# PHP 版本
+PHP_VERSION="8.3"
+WP_PATH="/var/www/${DOMAIN}"
+
+echo
+echo "🛠️ 开始安装依赖和配置环境..."
+
+# 更新系统
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y nginx mysql-server php8.3 php8.3-fpm php8.3-mysql php8.3-curl php8.3-gd php8.3-intl php8.3-mbstring php8.3-soap php8.3-xml php8.3-zip certbot python3-certbot-nginx unzip wget curl
 
-# 3. 配置 MySQL
-echo "🔧 配置 MySQL 数据库与用户"
+# 安装 Nginx、MySQL、PHP 及必备扩展
+sudo apt install -y nginx mysql-server php${PHP_VERSION}-fpm php${PHP_VERSION}-mysql php${PHP_VERSION}-curl php${PHP_VERSION}-gd php${PHP_VERSION}-intl php${PHP_VERSION}-mbstring php${PHP_VERSION}-soap php${PHP_VERSION}-xml php${PHP_VERSION}-zip unzip wget curl certbot python3-certbot-nginx
+
+# 启动并设置服务开机启动
+sudo systemctl enable nginx
+sudo systemctl enable mysql
+sudo systemctl enable php${PHP_VERSION}-fpm
+sudo systemctl start nginx
+sudo systemctl start mysql
+sudo systemctl start php${PHP_VERSION}-fpm
+
+echo
+echo "🔧 配置 MySQL 数据库和用户..."
+
 if [ -z "$MYSQL_ROOT_PASS" ]; then
-  echo "检测到 MySQL root 密码为空，尝试无密码连接"
-  MYSQL_CMD="mysql -uroot"
+    # 无root密码，直接操作
+    sudo mysql <<EOF
+CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
+FLUSH PRIVILEGES;
+EOF
 else
-  MYSQL_CMD="mysql -uroot -p${MYSQL_ROOT_PASS}"
+    sudo mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOF
+CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
+FLUSH PRIVILEGES;
+EOF
 fi
 
-$MYSQL_CMD -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-$MYSQL_CMD -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
-$MYSQL_CMD -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';"
-$MYSQL_CMD -e "FLUSH PRIVILEGES;"
+echo
+echo "⬇️ 下载独角数自动发卡系统最新版本（2.0.6-antibody）..."
 
-# 4. 自动获取独角数最新版本号
-echo "🌐 获取独角数最新版本号"
-LATEST_VERSION=$(curl -s https://api.github.com/repos/dujiaoka/dujiaoka/releases/latest | grep -Po '"tag_name": "\K.*?(?=")')
-if [ -z "$LATEST_VERSION" ]; then
-  echo "❌ 无法获取最新版本号，脚本退出"
-  exit 1
-fi
-echo "检测到最新版本为: $LATEST_VERSION"
+INSTALL_DIR="/var/www/${DOMAIN}"
+sudo mkdir -p "${INSTALL_DIR}"
+sudo chown "$USER":"$USER" "${INSTALL_DIR}"
+cd /tmp
+wget -c https://github.com/assimon/dujiaoka/releases/download/2.0.6/2.0.6-antibody.tar.gz -O dujiaoka.tar.gz
 
-# 5. 下载独角数压缩包
-DOWNLOAD_URL="https://github.com/dujiaoka/dujiaoka/releases/download/${LATEST_VERSION}/dujiaoka-${LATEST_VERSION}.zip"
-echo "⬇️ 下载独角数安装包: $DOWNLOAD_URL"
-wget -O dujiaoka.zip "$DOWNLOAD_URL"
+echo "🗜️ 解压并部署独角数程序..."
+tar -zxf dujiaoka.tar.gz -C "${INSTALL_DIR}"
+sudo chown -R www-data:www-data "${INSTALL_DIR}"
 
-# 6. 解压并部署
-echo "📂 解压并部署独角数"
-sudo mkdir -p /var/www/dujiaoka
-sudo unzip -o dujiaoka.zip -d /var/www/dujiaoka/
-sudo chown -R www-data:www-data /var/www/dujiaoka
+echo
+echo "🌐 配置 Nginx 虚拟主机..."
 
-# 7. 配置 Nginx 虚拟主机
-echo "🌐 配置 Nginx"
-cat > /etc/nginx/sites-available/${DOMAIN}.conf <<EOF
+NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}.conf"
+sudo bash -c "cat > ${NGINX_CONF}" <<EOF
 server {
     listen 80;
     server_name ${DOMAIN};
 
-    root /var/www/dujiaoka;
+    root ${INSTALL_DIR};
     index index.php index.html index.htm;
 
     client_max_body_size 1024M;
@@ -70,8 +92,9 @@ server {
 
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_pass unix:/var/run/php/php${PHP_VERSION}-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
     }
 
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|otf|eot)\$ {
@@ -81,26 +104,34 @@ server {
 }
 EOF
 
-sudo ln -sf /etc/nginx/sites-available/${DOMAIN}.conf /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
+sudo ln -sf "${NGINX_CONF}" /etc/nginx/sites-enabled/
 
-# 8. 优化 PHP 配置
-echo "⚙️ 优化 PHP 上传限制和执行时间"
-PHP_INI="/etc/php/8.3/fpm/php.ini"
-sudo sed -i "s/upload_max_filesize = .*/upload_max_filesize = 1024M/" $PHP_INI
-sudo sed -i "s/post_max_size = .*/post_max_size = 1024M/" $PHP_INI
-sudo sed -i "s/max_execution_time = .*/max_execution_time = 900/" $PHP_INI
-sudo sed -i "s/max_input_time = .*/max_input_time = 900/" $PHP_INI
+echo
+echo "⚙️ 优化 PHP 配置参数..."
 
-sudo systemctl restart php8.3-fpm
+PHP_INI="/etc/php/${PHP_VERSION}/fpm/php.ini"
+sudo sed -i "s/upload_max_filesize = .*/upload_max_filesize = 1024M/" "$PHP_INI"
+sudo sed -i "s/post_max_size = .*/post_max_size = 1024M/" "$PHP_INI"
+sudo sed -i "s/max_execution_time = .*/max_execution_time = 900/" "$PHP_INI"
+sudo sed -i "s/max_input_time = .*/max_input_time = 900/" "$PHP_INI"
 
-# 9. 申请 SSL 证书（自动交互）
-echo "🔐 使用 Certbot 为 ${DOMAIN} 申请 SSL 证书"
-sudo certbot --nginx -d "${DOMAIN}" --email "${SSL_EMAIL}" --agree-tos --no-eff-email --redirect
+echo
+echo "🔐 设置文件权限..."
 
-# 10. 设置目录权限
-sudo chown -R www-data:www-data /var/www/dujiaoka
-sudo find /var/www/dujiaoka -type d -exec chmod 755 {} \;
-sudo find /var/www/dujiaoka -type f -exec chmod 644 {} \;
+sudo chown -R www-data:www-data "${INSTALL_DIR}"
+sudo find "${INSTALL_DIR}" -type d -exec chmod 755 {} \;
+sudo find "${INSTALL_DIR}" -type f -exec chmod 644 {} \;
 
-echo "🎉 安装完成！请访问 https://${DOMAIN} 完成独角数后台初始化配置。"
+echo
+echo "🔐 申请 SSL 证书..."
+
+sudo certbot --nginx -d "${DOMAIN}" --agree-tos --no-eff-email --email "admin@${DOMAIN}" || echo "⚠️ SSL 申请失败，请确认域名已正确解析"
+
+echo
+echo "🔄 重启服务..."
+
+sudo systemctl reload nginx
+sudo systemctl restart php${PHP_VERSION}-fpm
+
+echo
+echo "🎉 安装完成！请访问 https://${DOMAIN} 进行后台初始化配置。"
