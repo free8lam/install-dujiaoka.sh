@@ -1,73 +1,66 @@
 #!/bin/bash
 
-echo "🧠 开始安装独角数自动发卡系统 (Dujiaoka)..."
+set -e
 
-# ==== 交互式参数输入 ====
-read -p "请输入用于部署的主域名（例如：shop.example.com）: " DOMAIN
-read -p "请输入用于申请 SSL 的邮箱: " SSL_EMAIL
-read -p "请输入数据库名称: " DB_NAME
-read -p "请输入数据库用户名: " DB_USER
-read -sp "请输入数据库密码: " DB_PASSWORD && echo
-read -sp "请输入 MySQL root 密码（若无则为空，直接回车）: " MYSQL_ROOT_PASSWORD && echo
+echo "==== 独角数自动发卡系统一键安装脚本（极致优化版） ===="
+echo "适用于 Ubuntu 20.04/22.04，自动安装 PHP 8.3 环境及相关依赖"
 
-DUJIAO_PATH="/var/www/dujiaoka"
-PHP_VERSION="8.1"
+# 输入配置参数，避免隐私泄漏
+read -p "请输入数据库名（示例：dujiaoka）: " DB_NAME
+read -p "请输入数据库用户名（示例：dujiaoka）: " DB_USER
+read -s -p "请输入数据库密码: " DB_PASSWORD
+echo
+read -p "请输入 MySQL root 用户密码（如果没有可留空）: " MYSQL_ROOT_PASSWORD
+read -p "请输入绑定的域名（示例：p.golife.blog）: " DOMAIN
 
-# ==== 更新系统 & 安装依赖 ====
-echo "🔧 安装依赖组件..."
+WEB_ROOT="/var/www/dujiaoka"
+
+echo "更新系统软件包..."
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y nginx mariadb-server php${PHP_VERSION}-fpm php${PHP_VERSION}-mysql php${PHP_VERSION}-mbstring php${PHP_VERSION}-xml php${PHP_VERSION}-curl php${PHP_VERSION}-zip unzip git curl composer php${PHP_VERSION}-bcmath php${PHP_VERSION}-intl php${PHP_VERSION}-gd
 
-# ==== 配置 MySQL 数据库 ====
-echo "🛠️ 创建数据库..."
+echo "安装 Nginx、MySQL、PHP 8.3 及必要 PHP 扩展..."
+sudo apt install -y nginx mysql-server php8.3 php8.3-fpm php8.3-mysql php8.3-curl php8.3-gd php8.3-intl php8.3-mbstring php8.3-soap php8.3-xml php8.3-zip php8.3-imagick unzip wget curl
+
+echo "配置 MySQL Root 密码（如提供）..."
 if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-    MYSQL_CMD="mysql -uroot -p$MYSQL_ROOT_PASSWORD"
-else
-    MYSQL_CMD="mysql -uroot"
+  sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASSWORD}'; FLUSH PRIVILEGES;"
 fi
 
-$MYSQL_CMD <<EOF
-CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';
-GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';
-FLUSH PRIVILEGES;
-EOF
+echo "创建数据库和用户..."
+MYSQL_CMD="mysql -uroot"
+if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
+  MYSQL_CMD="mysql -uroot -p${MYSQL_ROOT_PASSWORD}"
+fi
 
-# ==== 下载独角数 ====
-echo "⬇️ 下载 Dujiaoka..."
-sudo rm -rf ${DUJIAO_PATH}
-sudo git clone https://github.com/assimon/dujiaoka.git ${DUJIAO_PATH}
-cd ${DUJIAO_PATH}
-sudo composer install -o
+$MYSQL_CMD -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+$MYSQL_CMD -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';"
+$MYSQL_CMD -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost'; FLUSH PRIVILEGES;"
 
-# ==== 配置环境文件 ====
-echo "⚙️ 配置 .env..."
-sudo cp .env.example .env
+echo "下载独角数自动发卡系统..."
+sudo mkdir -p $WEB_ROOT
+cd /tmp
+wget -O dujiaoka.zip https://github.com/dujiaoka/dujiaoka/releases/latest/download/dujiaoka.zip
+unzip -o dujiaoka.zip -d dujiaoka_temp
+sudo cp -r dujiaoka_temp/. $WEB_ROOT
 
-sudo sed -i "s/DB_DATABASE=.*/DB_DATABASE=${DB_NAME}/" .env
-sudo sed -i "s/DB_USERNAME=.*/DB_USERNAME=${DB_USER}/" .env
-sudo sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=${DB_PASSWORD}/" .env
+echo "设置目录权限，确保安全"
+sudo chown -R www-data:www-data $WEB_ROOT
+sudo find $WEB_ROOT -type d -exec chmod 755 {} \;
+sudo find $WEB_ROOT -type f -exec chmod 644 {} \;
+# storage 目录为写权限
+sudo chmod -R 775 $WEB_ROOT/storage
+sudo chown -R www-data:www-data $WEB_ROOT/storage
 
-# ==== 设置文件权限 ====
-echo "🔐 设置权限..."
-sudo chown -R www-data:www-data ${DUJIAO_PATH}
-sudo chmod -R 755 ${DUJIAO_PATH}/
-
-# ==== 配置 Laravel ====
-echo "🔧 初始化 Laravel..."
-sudo php artisan dujiao:install
-sudo php artisan key:generate
-
-# ==== 配置 Nginx ====
-echo "🌐 配置 Nginx..."
-NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}"
-sudo tee ${NGINX_CONF} > /dev/null <<EOF
+echo "配置 Nginx 虚拟主机..."
+sudo tee /etc/nginx/sites-available/$DOMAIN.conf >/dev/null <<EOF
 server {
     listen 80;
-    server_name ${DOMAIN};
+    server_name $DOMAIN;
 
-    root ${DUJIAO_PATH}/public;
-    index index.php index.html;
+    root $WEB_ROOT/public;
+    index index.php index.html index.htm;
+
+    client_max_body_size 1024M;
 
     location / {
         try_files \$uri \$uri/ /index.php?\$query_string;
@@ -75,28 +68,44 @@ server {
 
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/var/run/php/php${PHP_VERSION}-fpm.sock;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
 
-    location ~ /\.ht {
-        deny all;
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|otf|eot)\$ {
+        expires max;
+        log_not_found off;
     }
 }
 EOF
 
-# 启用配置
-sudo ln -s ${NGINX_CONF} /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
+echo "启用 Nginx 站点配置并测试..."
+sudo ln -sf /etc/nginx/sites-available/$DOMAIN.conf /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
 
-# ==== 申请 SSL 证书 ====
-echo "🔐 申请 SSL..."
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d ${DOMAIN} --email ${SSL_EMAIL} --agree-tos --no-eff-email
+echo "极致优化 PHP 配置参数..."
 
-# ==== 重启服务 ====
-sudo systemctl restart php${PHP_VERSION}-fpm
+PHP_INI="/etc/php/8.3/fpm/php.ini"
+if [ -f "$PHP_INI" ]; then
+    sudo sed -i "s/upload_max_filesize = .*/upload_max_filesize = 1024M/" $PHP_INI
+    sudo sed -i "s/post_max_size = .*/post_max_size = 1024M/" $PHP_INI
+    sudo sed -i "s/max_execution_time = .*/max_execution_time = 900/" $PHP_INI
+    sudo sed -i "s/max_input_time = .*/max_input_time = 900/" $PHP_INI
+    sudo sed -i "s/memory_limit = .*/memory_limit = 512M/" $PHP_INI
+fi
+
+echo "重启 PHP-FPM 和 Nginx 服务..."
+sudo systemctl restart php8.3-fpm
+sudo systemctl enable php8.3-fpm
 sudo systemctl restart nginx
+sudo systemctl enable nginx
 
-echo "🎉 安装完成！请访问 https://${DOMAIN} 初始化后台信息"
+echo "配置防火墙，开放 80 端口..."
+if command -v ufw >/dev/null 2>&1; then
+  sudo ufw allow 80/tcp
+  sudo ufw reload
+fi
+
+echo "安装完成！请访问 http://$DOMAIN 进行后续配置。"
