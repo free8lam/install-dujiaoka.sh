@@ -2,10 +2,10 @@
 # WordPress 一键自动安装脚本（Ubuntu 24.04）
 # 组件: Nginx + MariaDB + PHP-FPM + WordPress + Let's Encrypt SSL
 # 运行: sudo bash install.sh
+
 set -euo pipefail
 
 CONFIG="/etc/wp-autoinstall.conf"
-# WP_PATH 会默认基于 DOMAIN 生成，首次为空
 DB_HOST="localhost"
 
 # 交互/配置变量（初始为空）
@@ -33,12 +33,13 @@ require_root() {
     error "请以 root 或使用 sudo 执行。示例：sudo bash install.sh"
     exit 1
   fi
-  if ! grep -qi "Ubuntu 24.04" /etc/os-release; then
-    warn "未检测到 Ubuntu 24.04 字样，请确认系统。脚本在其他发行版可能不兼容。"
+  if [[ -f /etc/os-release ]]; then
+    if ! grep -qi "ubuntu" /etc/os-release; then
+      warn "未检测到 Ubuntu 系列发行版。脚本主要在 Ubuntu 上测试。"
+    fi
   fi
 }
 
-# 读取一行交互，支持密文输入
 ask_value() {
   local prompt="$1"; local varname="$2"; local is_secret="${3:-0}"; local default="${4:-}"
   local val
@@ -51,7 +52,6 @@ ask_value() {
   eval "$varname=\"${val}\""
 }
 
-# 首次输入配置
 input_config() {
   log "请输入首次安装所需信息："
   ask_value "要开放的端口（逗号或空格分隔，默认 80,443）" OPEN_PORTS 0 "80,443"
@@ -64,7 +64,6 @@ input_config() {
   ask_value "WP 管理员密码（输入时不可见）" ADMIN_PASS 1
   ask_value "WP 管理员邮箱" ADMIN_EMAIL
   ask_value "SSL 证书邮箱（用于 Certbot）" SSL_EMAIL
-  # 默认 WP 路径以域名命名，若域名为空则使用 /var/www/wordpress
   if [[ -z "${WP_PATH}" ]]; then
     if [[ -n "${DOMAIN}" ]]; then
       WP_PATH="/var/www/${DOMAIN}"
@@ -106,16 +105,25 @@ load_config() { # shellcheck disable=SC1090
   fi
 }
 
-# 安装基础包（idempotent）
+backup_file_if_exists() {
+  local f="$1"
+  if [[ -f "$f" ]]; then
+    cp -a "$f" "${f}.bak.$(date +%s)"
+    log "已备份 ${f} 为 ${f}.bak.$(date +%s)"
+  fi
+}
+
 install_packages() {
-  log "更新 apt 源并安装所需软件包（Nginx, MariaDB, PHP, WP-CLI, Certbot）..."
+  log "更新 apt 源并安装所需软件包（Nginx, MariaDB, PHP, WP-CLI, Certbot 等）..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
 
-  # 安装包列表（使用 php 元包以获取系统默认最新 php）
-  apt-get install -y nginx mariadb-server php-fpm php-mysql php-xml php-gd php-curl php-zip curl wget zip unzip certbot python3-certbot-nginx rsync
+  apt-get install -y nginx mariadb-server php-fpm php-mysql php-xml php-gd php-curl php-zip curl wget zip unzip certbot python3-certbot-nginx rsync dnsutils
 
-  # WP-CLI 安装（若不存在才安装）
+  install_wpcli_if_missing
+}
+
+install_wpcli_if_missing() {
   if ! command -v wp >/dev/null 2>&1; then
     log "安装 WP-CLI..."
     curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp
@@ -123,25 +131,16 @@ install_packages() {
   fi
 }
 
-# 检测系统上已安装的 PHP 版本并设置 FPM 服务名
 detect_php() {
   if command -v php >/dev/null 2>&1; then
     PHP_VER="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
-    # FPM service name 可能为 php8.2-fpm 等
+    # find FPM service
     if systemctl list-units --full -all -t service | grep -q "php${PHP_VER}-fpm.service"; then
       FPM_SERVICE="php${PHP_VER}-fpm"
     else
-      # 尝试查找任意 php*fpm 服务
       FPM_SERVICE="$(systemctl list-units --type service --no-legend | awk '{print $1}' | grep -E 'php[0-9]+\.[0-9]+-fpm.service' | head -n1 | sed 's/.service$//')"
-      if [[ -z "$FPM_SERVICE" ]]; then
-        # 作为最后手段，尝试常见版本
-        for v in 8.3 8.2 8.1 8.0; do
-          if systemctl list-units --full -all -t service | grep -q "php${v}-fpm.service"; then
-            FPM_SERVICE="php${v}-fpm"
-            PHP_VER="${v}"
-            break
-          fi
-        done
+      if [[ -n "$FPM_SERVICE" ]]; then
+        PHP_VER="$(echo "$FPM_SERVICE" | sed -E 's/php([0-9]+\.[0-9]+)-fpm/\1/')"
       fi
     fi
     if [[ -z "$PHP_VER" || -z "$FPM_SERVICE" ]]; then
@@ -155,10 +154,8 @@ detect_php() {
   fi
 }
 
-# 在 php.ini 中写入或替换键值（保留注释行处理）
 apply_ini_value() {
   local file="$1"; local key="$2"; local value="$3"
-  # 如果存在该键（可能前面有分号注释），用 sed 替换；否则追加
   if grep -qE "^[[:space:]]*;?[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null; then
     sed -i -E "s|^[[:space:]]*;?[[:space:]]*${key}[[:space:]]*=.*|${key} = ${value}|g" "$file"
   else
@@ -188,23 +185,13 @@ tune_php() {
   fi
 }
 
-backup_file_if_exists() {
-  local f="$1"
-  if [[ -f "$f" ]]; then
-    cp -a "$f" "${f}.bak.$(date +%s)"
-    log "已备份 ${f} 为 ${f}.bak.<timestamp>"
-  fi
-}
-
-# Nginx 配置（注意转义 nginx 变量）
 configure_nginx() {
   log "配置 Nginx 站点..."
   mkdir -p "${WP_PATH}"
-  # 备份原有站点配置
   local site_conf="/etc/nginx/sites-available/wordpress"
   backup_file_if_exists "$site_conf"
 
-  cat > "$site_conf" <<'EOF'
+  cat > "$site_conf" <<'NGINX_EOF'
 server {
     listen 80;
     server_name __DOMAIN__;
@@ -226,34 +213,28 @@ server {
         log_not_found off;
     }
 }
-EOF
+NGINX_EOF
 
-  # 替换占位符（确保替换安全）
-  FPM_SOCK="/run/php/php${PHP_VER}-fpm.sock"
+  # 替换占位符
+  local fpm_sock="/run/php/php${PHP_VER}-fpm.sock"
   sed -i "s|__DOMAIN__|${DOMAIN}|g" "$site_conf"
   sed -i "s|__WPPATH__|${WP_PATH}|g" "$site_conf"
-  sed -i "s|__FPM_SOCK__|${FPM_SOCK}|g" "$site_conf"
+  sed -i "s|__FPM_SOCK__|${fpm_sock}|g" "$site_conf"
 
-  # 启用站点
   ln -sf "$site_conf" /etc/nginx/sites-enabled/wordpress
   if [[ -f /etc/nginx/sites-enabled/default ]]; then
     rm -f /etc/nginx/sites-enabled/default
   fi
 
-  # 测试配置并重启
   nginx -t
   systemctl restart nginx
   systemctl enable nginx
 }
 
-# 开放端口（基于 ufw）；若 ufw 不可用或未启用，则提示用户手动开放
 open_ports() {
-  # 将 OPEN_PORTS 格式化为数组
   local raw="$1"
-  # 替换空格为逗号，然后用逗号分隔
   raw="${raw// /,}"
   IFS=',' read -ra ports <<< "$raw"
-  # 去重并过滤空
   declare -A seen
   local to_open=()
   for p in "${ports[@]}"; do
@@ -272,10 +253,10 @@ open_ports() {
       done
       ufw reload || true
     else
-      warn "UFW 未启用。请在防火墙/云提供商控制台中手动开放端口: ${to_open[*]}"
+      warn "UFW 未启用。请在防火墙/云控制台手动开放端口: ${to_open[*]}"
     fi
   else
-    warn "系统未安装 UFW。请手动开放端口或安装 ufw 后重新运行脚本。端口: ${to_open[*]}"
+    warn "未检测到 UFW。请手动确保端口 ${to_open[*]} 已开放（云面板或 iptables）。"
   fi
 }
 
@@ -287,7 +268,6 @@ CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
 FLUSH PRIVILEGES;
 "
-  # 使用 sudo mysql 更可靠（针对 unix_socket 验证）
   echo "$sql" | sudo mysql
   systemctl restart mariadb || true
   systemctl enable mariadb || true
@@ -307,19 +287,50 @@ download_wordpress() {
   fi
 }
 
-# wp-cli 操作：创建 wp-config.php 并安装/更新 WP
+# 修复可能存在的错误 define（例如 define('FS_METHOD', direct);）
+fix_wp_constants_in_config() {
+  local cfg="${WP_PATH}/wp-config.php"
+  if [[ -f "$cfg" ]]; then
+    # 如果存在未加引号的 direct 常量，替换为带引号的
+    if grep -q "FS_METHOD" "$cfg" 2>/dev/null; then
+      sed -i "s/define\s*(\s*'FS_METHOD'\s*,\s*direct\s*)/define('FS_METHOD','direct')/g" "$cfg" || true
+      # 更稳妥写法：确保格式为 define('FS_METHOD', 'direct');
+      sed -i "s/define\s*(\s*'FS_METHOD'\s*,\s*'direct'\s*)/define('FS_METHOD', 'direct')/g" "$cfg" || true
+    fi
+  fi
+}
+
 setup_wordpress() {
   install_wpcli_if_missing
   if [[ ! -f "${WP_PATH}/wp-config.php" ]]; then
     log "生成 wp-config.php..."
-    wp config create --path="${WP_PATH}" --allow-root --dbname="${DB_NAME}" --dbuser="${DB_USER}" --dbpass="${DB_PASS}" --dbhost="${DB_HOST}" --skip-check
-    wp config set FS_METHOD direct --path="${WP_PATH}" --allow-root --raw
+    wp config create --path="${WP_PATH}" --allow-root --dbname="${DB_NAME}" --dbuser="${DB_USER}" --dbpass="${DB_PASS}" --dbhost="${DB_HOST}" --skip-check || {
+      error "wp config create 失败，请检查 DB 信息。"
+      exit 1
+    }
   fi
+
+  # 使用 WP-CLI 写入常量（更安全）
+  # FS_METHOD 应为字符串 'direct'
+  if wp config get FS_METHOD --path="${WP_PATH}" --allow-root >/dev/null 2>&1; then
+    log "FS_METHOD 已存在于 wp-config.php，尝试修正为字符串格式..."
+    # 覆盖为常量字符串
+    wp config set FS_METHOD 'direct' --path="${WP_PATH}" --allow-root --type=constant || true
+  else
+    wp config set FS_METHOD 'direct' --path="${WP_PATH}" --allow-root --type=constant || true
+  fi
+
+  # 其他建议常量（可选）
+  wp config set WP_MEMORY_LIMIT '512M' --path="${WP_PATH}" --allow-root --type=constant || true
+  wp config set WP_MAX_MEMORY_LIMIT '1024M' --path="${WP_PATH}" --allow-root --type=constant || true
+
+  # 兼容用 sed 修复可能存在的错误写法（兜底）
+  fix_wp_constants_in_config
 
   if wp core is-installed --path="${WP_PATH}" --allow-root >/dev/null 2>&1; then
     log "WordPress 已安装，更新站点 URL 为 https://${DOMAIN}"
-    wp option update siteurl "https://${DOMAIN}" --path="${WP_PATH}" --allow-root
-    wp option update home "https://${DOMAIN}" --path="${WP_PATH}" --allow-root
+    wp option update siteurl "https://${DOMAIN}" --path="${WP_PATH}" --allow-root || true
+    wp option update home "https://${DOMAIN}" --path="${WP_PATH}" --allow-root || true
   else
     log "执行 WordPress 安装并创建管理员..."
     wp core install \
@@ -330,24 +341,18 @@ setup_wordpress() {
       --admin_user="${ADMIN_USER}" \
       --admin_password="${ADMIN_PASS}" \
       --admin_email="${ADMIN_EMAIL}" \
-      --skip-email
+      --skip-email || {
+        error "wp core install 执行失败，请查看上方错误信息并修复后重试。"
+        exit 1
+      }
   fi
+
   chown -R www-data:www-data "${WP_PATH}"
 }
 
-install_wpcli_if_missing() {
-  if ! command -v wp >/dev/null 2>&1; then
-    log "安装 WP-CLI..."
-    curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp
-    chmod +x /usr/local/bin/wp
-  fi
-}
-
-# 在申请证书前做域名解析与端口检查
 preflight_checks_for_certbot() {
   if ! command -v host >/dev/null 2>&1 && ! command -v dig >/dev/null 2>&1; then
     warn "系统缺少 'host' 或 'dig' 工具，无法自动验证域名解析。建议安装 dnsutils（apt install -y dnsutils）。"
-    return
   fi
 
   if command -v host >/dev/null 2>&1; then
@@ -358,7 +363,6 @@ preflight_checks_for_certbot() {
     fi
   fi
 
-  # 检查 80 端口是否监听 (ss 工具)
   if ss -ltn | grep -q ':80 '; then
     log "检测到本机 80 端口在监听（可能由 nginx）。"
   else
@@ -388,7 +392,6 @@ summary() {
   echo "后台登录: https://${DOMAIN}/wp-admin"
   echo "数据库: ${DB_NAME} @ ${DB_HOST} (用户: ${DB_USER})"
   echo "管理员: ${ADMIN_USER}  （请妥善保存密码）"
-  # SSL 状态检测
   if [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
     echo "SSL 证书: 已安装（Let's Encrypt）"
   else
@@ -451,16 +454,13 @@ else
   save_config
 fi
 
-# 执行安装流程
 install_packages
 detect_php
 tune_php
-# 打开端口（尽早，确保 certbot/外部访问）
 open_ports "${OPEN_PORTS}"
 setup_database
 download_wordpress
 configure_nginx
-# 确保 nginx 正常后再运行 WordPress 安装
 setup_wordpress
 obtain_ssl
 summary
