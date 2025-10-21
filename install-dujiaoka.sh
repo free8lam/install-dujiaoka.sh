@@ -21,7 +21,7 @@ ADMIN_USER=""
 ADMIN_PASS=""
 ADMIN_EMAIL=""
 SSL_EMAIL=""
-OPEN_PORTS="80 443"
+OPEN_PORTS="80 443 10888"
 PHP_VER=""
 FPM_SERVICE=""
 
@@ -94,7 +94,7 @@ install_packages() {
   log "安装依赖包（Nginx、MariaDB、PHP、WP-CLI、Certbot）..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y nginx mariadb-server php-fpm php-mysql php-xml php-gd php-curl php-zip php-mbstring php-intl php-imagick curl wget zip unzip certbot python3-certbot-nginx
+  apt-get install -y nginx mariadb-server php-fpm php-cli php-mysql php-xml php-gd php-curl php-zip php-mbstring php-intl php-imagick curl wget zip unzip rsync certbot python3-certbot-nginx
 }
 
 detect_php() {
@@ -255,9 +255,9 @@ obtain_ssl() {
 summary() {
   echo "------------------------------------------------------------"
   echo "安装完成！请访问："
-  echo "http://${DOMAIN}/ （HTTP 临时访问）"
+  echo "https://${DOMAIN}/"
   echo "管理员后台："
-  echo "http://${DOMAIN}/wp-admin"
+  echo "https://${DOMAIN}/wp-admin"
   echo "已开放端口: $OPEN_PORTS"
   echo "------------------------------------------------------------"
 }
